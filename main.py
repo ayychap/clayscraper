@@ -5,9 +5,7 @@
 # Just access the Google Sheet and get back to slinging that mud:
 
 # Due to inconsistent formatting, this will return a pretty sloppy final csv.
-# For example, firing color is split across five different columns due to variants in spelling/formatting.
-# Some of these problems are pretty simple fixes in the Python console, but a few of the minor one-off issues are
-# faster to edit in the final spreadsheet.
+# Fortunately, most are minor one-off issues that are faster to edit in the final spreadsheet.
 
 import re
 from bs4 import BeautifulSoup
@@ -68,6 +66,8 @@ def cut_clay(raw):  # massage all of that no delimiter description content into 
 
                     clay_dict[avg_split.group(1).lower()] = avg_split.group(2) + clay_characteristics[n + 1][0]
 
+                elif clay_characteristics[n][1][0:3].lower() == "fir":  # Combine all of the fired color categories.
+                    clay_dict["fired color"] = clay_characteristics[n + 1][0].strip()
                 else:
                     clay_dict[clay_characteristics[n][1].lower().strip(":")] = clay_characteristics[n + 1][0].strip()
         except:
@@ -88,21 +88,17 @@ class TrimTools():  # Some methods to crawl Laguna's website with Selenium
         time.sleep(3)
 
         laguna_clay_html = self.browser.page_source
+
         slip = BeautifulSoup(laguna_clay_html, "html.parser")
+        clay_divs = slip.find_all('div', class_='ETPbIy EGg5Ga')
 
-        #something like this, different tags/classes
-        clay_names = slip.find('pre', class_='_28cEs').text
+        clay_dict = dict()
+        for div in clay_divs:
+            clay_link = div.find('a').get("href")
+            clay_name = div.find("h3").text
+            clay_dict[clay_name] = clay_link
 
-        #replace this
-        clay_list = re.findall(laguna_link_re_get, laguna_clay_html)
-        print(clay_list)
-
-
-        clay_list_df = pd.DataFrame(clay_list, columns=["page link", "clay"])
-
-        #modify this
-        clay_list_df["page link"] = laguna_product_page_url + clay_list_df["page link"]
-
+        clay_list_df = pd.DataFrame(list(clay_dict.items()), columns=["clay", "page link"])
 
         clay_list_df.to_csv("laguna_clay_list.csv")
 
