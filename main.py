@@ -3,6 +3,7 @@
 # Why would you mess with this code if you just want the data?
 # I don't know. Maybe the spreadsheet is down. Maybe Laguna has some new clays.
 # Just access the Google Sheet and get back to slinging that mud:
+# https://docs.google.com/spreadsheets/d/1-OB2215MkYa8ahn4SySlFGC3SruQsl-Ac-zunVDWkUo/edit?usp=sharing
 
 # Due to inconsistent formatting, this will return a pretty sloppy final csv.
 # Fortunately, most are minor one-off issues that are faster to edit in the final spreadsheet.
