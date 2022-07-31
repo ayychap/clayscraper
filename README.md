@@ -11,4 +11,5 @@ Want the cleaned up spreadsheet of clays? [Here it is.](https://docs.google.com/
 
 ## Future Improvements: 
 
-1. Other clay companies exist! Get that data too!
+1. Split shrinkage/absorption so that the error is separated.
+2. Other clay companies exist! Get that data too!
