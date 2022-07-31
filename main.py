@@ -27,6 +27,7 @@ working_dir = pathlib.Path.cwd()
 raw_clay_csv_path = pathlib.Path(working_dir / "laguna_clay_list.csv")  #just info from the main list
 wedged_clay_csv_path = pathlib.Path(working_dir / "laguna_clay_list_descripts.csv")  #with the raw descriptions
 final_clay_csv_path = pathlib.Path(working_dir / "laguna_clay_list_final.csv")  #split out into different characteristics
+final_clay_xlsx_path = pathlib.Path(working_dir / "laguna_clay_list_final.xlsx")
 
 desc_split_words = {"Cone:", "Wet Color:", "Firing Color:", "Texture:", "Consistency:",
                     "Avg. Shrinkage", "Avg. Water Absorption", "COE", "Penetrometer Target:"}
@@ -139,5 +140,9 @@ class TrimTools():  # Some methods to crawl Laguna's website with Selenium
 
         final_clay_df = clay_list_df.merge(clay_characteristics_df, left_on="clay", right_on="index")
 
-        final_clay_df.to_csv(final_clay_csv_path)
+        final_clay_df[['shrinkage err', 'shrinkage']] = final_clay_df['avg. shrinkage'].str.split(':', 1, expand=True)
+        final_clay_df[['water absorb err', 'water absorption']] = final_clay_df['avg. water absorption'].str.split(':', 1,
+                                                                                                                 expand=True)
+
+        final_clay_df.to_excel(final_clay_xlsx_path)
 
