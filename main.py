@@ -1,12 +1,12 @@
-# Quick and dirty (muddy even) tools to scrape clay characteristics from Laguna's website.
+# Quick and dirty (muddy even) tools to scrape clay characteristics from a couple of different manufacturer websites.
 
 # Why would you mess with this code if you just want the data?
-# I don't know. Maybe the spreadsheet is down. Maybe Laguna has some new clays.
+# I don't know. Maybe the spreadsheet is down. Maybe new clays just dropped.
 # Just access the Google Sheet and get back to slinging that mud:
 # https://docs.google.com/spreadsheets/d/1-OB2215MkYa8ahn4SySlFGC3SruQsl-Ac-zunVDWkUo/edit?usp=sharing
 
-# Due to inconsistent formatting, this will return a pretty sloppy final csv.
-# Fortunately, most are minor one-off issues that are faster to edit in the final spreadsheet.
+# Due to very inconsistent formatting on the source pages, this will return pretty sloppy final output.
+# Most are one-off issues that don't generalize well, so I'm fixing those in the final spreadsheet
 
 import re
 from bs4 import BeautifulSoup
@@ -16,133 +16,192 @@ from selenium.webdriver.chrome.options import Options
 import pathlib
 import time
 
-laguna_link_re_get = """lagunaclay\.com/product-page/(?P<link>[A-Za-z\d-]*)\" class=\"JPDEZd(?:.*?)data-hook=\"product-item-name\">(?P<clay>[A-Za-z\s\d]*)<"""
-laguna_clay_info_re_get = """<meta name=\"description\" content=\"(?P<description>.*)  Cone: (?P<cone>.*)Wet Color: (?P<wet>.*)Fired color: (?P<fired>.*)Texture: (?P<texture>.*)Penetrometer Target: (?P<pene>.*)Avg\. Water Absorption (?P<absorp>.*)Avg\. Shrinkage (?P<shrink>.*)COE (?P<coe>.*)\"/>"""
+man_dict = {"1": "laguna", "2": "rocky mountain"}  # mappings for manufacturers
 
-laguna_clay_url = "https://www.lagunaclay.com/shop?page=6"
-
-laguna_product_page_url = "https://www.lagunaclay.com/product-page/"
+# For Selenium
+opts = Options()
+opts.add_argument("--headless")
 
 working_dir = pathlib.Path.cwd()
-raw_clay_csv_path = pathlib.Path(working_dir / "laguna_clay_list.csv")  #just info from the main list
-wedged_clay_csv_path = pathlib.Path(working_dir / "laguna_clay_list_descripts.csv")  #with the raw descriptions
-final_clay_csv_path = pathlib.Path(working_dir / "laguna_clay_list_final.csv")  #split out into different characteristics
-final_clay_xlsx_path = pathlib.Path(working_dir / "laguna_clay_list_final.xlsx")
 
-desc_split_words = {"Cone:", "Wet Color:", "Firing Color:", "Texture:", "Consistency:",
-                    "Avg. Shrinkage", "Avg. Water Absorption", "COE", "Penetrometer Target:"}
+# set up manufacturer info based on menu selection
+class Manufacturer:
+
+    def __init__(self, n):
+        assert n in man_dict.keys()
+        self.manu = man_dict[n]
+        self.raw_clay_csv = self.manu + "_raw_clay_list.csv"  # just info from the main list
+        self.wedged_clay_csv = self.manu + "_clay_list_descripts.csv"  # with the raw descriptions
+        self.final_clay_xlsx = self.manu + "_clay_list_final.xlsx"  # split out into different characteristics
+
+        if self.manu == "laguna":
+            self.clay_url = "https://www.lagunaclay.com/shop?page=6"
+            self.content_tag = 'pre'
+            self.content_class = '_28cEs'
+        elif self.manu == "rocky mountain":
+            self.clay_url = "https://rockymountainclay.com/product-category/all-clays/"
+            self.content_tag = 'div'
+            self.content_class = 'et_pb_row et_pb_row_1'
+        else:
+            raise ValueError("No manufacturer found")
 
 
-def cut_clay(raw):  # massage all of that no delimiter description content into categories
+def print_manufacturer_selection_menu():
+    print("Select a Manufacturer")
+    for key in man_dict.keys():
+        print(key + ': ' + man_dict[key])
+    print("Q: Quit")
+
+def print_action_selection_menu(brand):
+    print("You selected " + brand.manu + ". What do you want to do?")
+    print('''
+    1: Make a list of clays
+    2: Get characteristics for a list of clays
+    3: Choose another manufacturer
+    Q: Quit''')
+
+
+# Cut a list of paragraphs into a description, and characteristics
+def cut_list(line_list):
     clay_dict = dict()
-    # split on "Cone:" first part is description, second part is clay characteristics (if it exists)
 
-    first_split = re.split("Cone:", raw)
+    line_list = [l for l in line_list if l != "" and l != "Description:"] #remove empty lines and leading Description line
 
-    # tidy up that description a little
-    clean_descript = first_split[0].split("Ships from", 1)[0]
-    clean_descript = clean_descript.split("Characteristics", 1)[0]
-    clean_descript = clean_descript.split("SDS Sheet", 1)[0]
+    clay_dict["description"] = line_list[0]
 
+    characteristics_matcher = re.compile("(?P<label>[A-Z].*?): (?P<val>.*)")  # Capture distinct characteristics
+    avg_matcher = re.compile("(?P<label>Avg.*) (?P<err>(±|\d).*%): (?P<val>\d.*%)")  # Split up the weird Avg. characteristics
 
-    clay_dict["description"] = clean_descript
+    for n in range(1, len(line_list)):
+        if line_list[n][0:3] == "Avg":  # Avg. Shrinkage/Absorption are weird, so handle these differently
+            avg_split = avg_matcher.match(line_list[n])
 
-    if len(first_split) > 1:  # we got clay characteristics!
-        characteristics_matcher = re.compile("(.*?[a-z\d\%])([A-Z].*?\:)")  # Find all the distinct characteristics
-        avg_matcher = re.compile("(?P<label>.*) (?P<percentage>\d.*)")  # Split up the weird Avg. characteristics
-
-        coe_split = re.split("COE", first_split[1])
-        # split off COE, this is formatted strangely
-        if len(coe_split) > 1:
-            clay_dict["coe"] = coe_split[1]
-
-        # split up all of the characteristics: first should be cone, then alternate name and content
-        clay_characteristics = characteristics_matcher.findall(first_split[1])
-
-        try:  # but sometimes there isn't cone information for some reason...
-            clay_dict["cone"] = clay_characteristics[0][0].strip()
-
-            for n in range(0, len(clay_characteristics) - 1):
-                if clay_characteristics[n][1][0:3] == "Avg":  # Avg. Shrinkage/Absorption are weird.
-                    avg_split = avg_matcher.match(clay_characteristics[n][1])
-
-                    clay_dict[avg_split.group(1).lower()] = avg_split.group(2) + clay_characteristics[n + 1][0]
-
-                elif clay_characteristics[n][1][0:3].lower() == "fir":  # Combine all of the fired color categories.
-                    clay_dict["fired color"] = clay_characteristics[n + 1][0].strip()
+            if avg_split is not None:
+                clay_dict[avg_split.group("label").lower()] = avg_split.group("val")
+                clay_dict[avg_split.group("label").lower() + " error"] = avg_split.group("err")
+        else:
+            char_split = characteristics_matcher.match(line_list[n])
+            if char_split is not None:
+                if char_split.group("label").lower() == 'sds sheetcharacteristicscone': #issue for Laguna
+                    clay_dict['cone'] = char_split.group("val")
+                elif char_split.group("label").lower()[0:3] == 'fir': #fired color naming is all over the place
+                    clay_dict["fired color"] = char_split.group("val")
                 else:
-                    clay_dict[clay_characteristics[n][1].lower().strip(":")] = clay_characteristics[n + 1][0].strip()
-        except:
-            return clay_dict
+                    clay_dict[char_split.group("label").lower()] = char_split.group("val")
+
     return clay_dict
 
 
-class TrimTools():  # Some methods to crawl Laguna's website with Selenium
+# Create a base list of clays with links to their respective pages.
+def make_clay_list(brand):
+    assert isinstance(brand, Manufacturer)
+    browser = Chrome(options=opts)
+    browser.get(brand.clay_url)
+    browser.execute_script("window.scrollTo(0,document.body.scrollHeight)")
+    time.sleep(3)
 
-    def __init__(self):
-        opts = Options()
-        opts.add_argument("--headless")
-        self.browser = Chrome(options=opts)
+    clay_page = browser.page_source
 
-    def make_clay_list(self):  # Get a base list of clays from Laguna
-        self.browser.get(laguna_clay_url)
-        self.browser.execute_script("window.scrollTo(0,document.body.scrollHeight)")
-        time.sleep(3)
+    slip = BeautifulSoup(clay_page, "html.parser")
 
-        laguna_clay_html = self.browser.page_source
+    clay_dict = dict()
 
-        slip = BeautifulSoup(laguna_clay_html, "html.parser")
+    if brand.manu == "laguna":
         clay_divs = slip.find_all('div', class_='ETPbIy EGg5Ga')
 
-        clay_dict = dict()
         for div in clay_divs:
             clay_link = div.find('a').get("href")
             clay_name = div.find("h3").text
             clay_dict[clay_name] = clay_link
 
-        clay_list_df = pd.DataFrame(list(clay_dict.items()), columns=["clay", "page link"])
+    elif brand.manu == "rocky mountain":  # rocky mountain
+        clay_ul = slip.find('ul', class_="products columns-4")
+        clay_items = clay_ul.find_all('li')
 
-        clay_list_df.to_csv("laguna_clay_list.csv")
+        for div in clay_items:
+            clay_link = div.find('a').get("href")
+            clay_name = div.find("h2").text
+            clay_dict[clay_name] = clay_link
 
-    def wedge(self):  # get info for each clay in a csv and update
-        try:
-            clay_list_df = pd.read_csv(raw_clay_csv_path)
+    else:
+        browser.quit()
+        raise ValueError("Manufacturer not valid.")
 
-            clay_dict = dict()
+    clay_list_df = pd.DataFrame(list(clay_dict.items()), columns=["clay", "page link"])
 
-            for link in clay_list_df["page link"]:
-                self.browser.get(link)
-                time.sleep(1)
-                clay_page = self.browser.page_source
-                slip = BeautifulSoup(clay_page, "html.parser")
-                clay_desc = slip.find('pre', class_='_28cEs').text  # looking for pre tag, class="_28cEs"
-                clay_dict[link] = clay_desc
+    clay_list_df.to_csv(brand.raw_clay_csv)
+    browser.quit()
 
-            clay_list_df['raw descripts'] = clay_list_df["page link"].map(clay_dict)
-            clay_list_df.to_csv("laguna_clay_list_descripts.csv")
 
-        except:
-            print("Clay list not found or formatted correctly, try make_clay_list first.")
+def wedge(brand):  # get raw info for each clay in a csv and update
+    assert isinstance(brand, Manufacturer)
+    browser = Chrome(options=opts)
+    clay_dict = dict()
 
-    def shape(self):  # format all those descriptions nicely and pull out the stats
-        try:
-            clay_list_df = pd.read_csv(wedged_clay_csv_path)
+    try:
+        clay_list_df = pd.read_csv(pathlib.Path(working_dir / brand.raw_clay_csv))
 
-            clay_dict = dict()
+        link_content_dict = dict()
 
-            for clay in clay_list_df["clay"]:
-                clay_dict[clay] = cut_clay(clay_list_df.loc[clay_list_df["clay"] == clay, 'raw descripts'].item())
+        for link in clay_list_df["page link"]:
+            browser.get(link)
+            time.sleep(1)
+            clay_page = browser.page_source
+            slip = BeautifulSoup(clay_page, "html.parser")
+            link_content_dict[link] = slip
 
-        except:
-            print("Clay list not found or formatted correctly, try wedge first")
+        browser.quit()
 
-        clay_characteristics_df = pd.DataFrame(clay_dict).T.reset_index()
+        for link in link_content_dict.keys():
+            clay_content = link_content_dict[link].find(brand.content_tag, class_=brand.content_class)
 
-        final_clay_df = clay_list_df.merge(clay_characteristics_df, left_on="clay", right_on="index")
+            for br in clay_content.find_all("br"):
+                br.replace_with("\n")
 
-        final_clay_df[['shrinkage err', 'shrinkage']] = final_clay_df['avg. shrinkage'].str.split(':', 1, expand=True)
-        final_clay_df[['water absorb err', 'water absorption']] = final_clay_df['avg. water absorption'].str.split(':', 1,
-                                                                                                                 expand=True)
+            clay_info = clay_content.find_all('p')
+            p_content = [p.text for p in clay_info]
+            clay_dict[link] = cut_list([line.strip() for entry in p_content for line in re.split("\n|\xa0", entry)])
 
-        final_clay_df.to_excel(final_clay_xlsx_path)
+    except:
+        browser.quit()
+        print("Clay list not found or formatted correctly, try making a clay list first.")
 
+    clay_characteristics_df = pd.DataFrame(clay_dict).T.reset_index()
+    final_clay_df = clay_list_df.merge(clay_characteristics_df, left_on="page link", right_on="index")
+    final_clay_df.drop(['index'], axis=1, inplace=True)
+    final_clay_df.to_excel(brand.final_clay_xlsx)
+
+
+#Run the menu and get throwing!
+
+while(True):
+    print_manufacturer_selection_menu()
+    option = input('Choice: ')
+
+    if option in man_dict.keys():
+        brand = Manufacturer(option)
+
+        submenu = True
+
+        while(submenu == True):
+            print_action_selection_menu(brand)
+            option2 = input('Choice: ')
+
+            if option2 == "1":
+                make_clay_list(brand)
+                print("List of clay links created")
+            elif option2 == "2":
+                wedge(brand)
+                print("Characteristics spreadsheet created. See " + brand.final_clay_xlsx)
+            elif option2 == "3":
+                print("Returning to manufacturer selection...")
+                submenu = False
+            elif option2 == "Q":
+                exit()
+            else:
+                print('Invalid option.')
+
+    elif option == "Q":
+        exit()
+    else:
+        print('Invalid option.')
